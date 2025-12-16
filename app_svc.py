@@ -18,7 +18,7 @@ FEATURES = [
 ]
 TARGET = "event"
 
-DEFAULT_MODEL_PATH = r"C:\\Users\\86155\\Desktop\\best_svc.pkl"
+DEFAULT_MODEL_PATH = "best_svc.pkl"
 
 st.title("🧠 SVC 临床风险预测交互网页")
 st.caption("输入病人特征或上传 CSV，输出 SVC 预测概率与类别。")
@@ -122,3 +122,4 @@ with tab2:
             file_name="svc_predictions.csv",
             mime="text/csv"
         )
+

@@ -66,6 +66,11 @@ except Exception as e:
 
 st.sidebar.markdown("---")
 show_explain = st.sidebar.checkbox("Show SHAP explanation for single case", value=True)
+plot_type = st.sidebar.radio(
+    "SHAP plot type",
+    ["Waterfall (paper)", "Force (paper-style bar)"],
+    index=0,
+)
 bg_rows = st.sidebar.slider("SHAP background rows", 20, 500, 100, 10)
 nsamples = st.sidebar.slider("SHAP nsamples (speed/quality)", 50, 800, 200, 50)
 
@@ -144,10 +149,10 @@ with tab1:
         else:
             st.success("Result: Low risk (0)")
 
-        # ---- SHAP (paper-ready waterfall) ----
+        # ---- SHAP (Waterfall or Force) ----
         if show_explain:
             st.markdown("### Model explanation (SHAP)")
-            st.caption("Paper-ready: SHAP waterfall plot (static), with PNG/PDF export.")
+            st.caption("Paper-ready SHAP plot with PNG/PDF export.")
 
             if "shap_bg" not in st.session_state or st.session_state["shap_bg"].empty:
                 st.warning(
@@ -163,7 +168,6 @@ with tab1:
                 bg_np = bg_df[FEATURES].to_numpy(dtype=float)
                 x_np = X_one[FEATURES].to_numpy(dtype=float)
 
-                # wrapper predict fn (works with sklearn Pipeline too)
                 def predict_fn(x):
                     x_df = pd.DataFrame(x, columns=FEATURES)
                     proba_ = np.asarray(model.predict_proba(x_df))
@@ -176,11 +180,11 @@ with tab1:
                     shap_values = explainer.shap_values(x_np, nsamples=nsamples)
                     expected_value = explainer.expected_value
 
-                    # choose positive class shap container if possible
+                    # choose positive-class container if possible
                     sv = shap_values[1] if isinstance(shap_values, list) and len(shap_values) > 1 else shap_values
                     sv_arr = np.asarray(sv)
 
-                    # ---- Robust: make 1D for waterfall ----
+                    # ---- Robust: make 1D SHAP values for positive class ----
                     # shapes: (1,7,2) -> [0,:,1]
                     #         (7,2)   -> [:,1]
                     #         (1,7)   -> [0]
@@ -200,8 +204,9 @@ with tab1:
 
                     # base value: take positive class if available
                     ev_arr = np.atleast_1d(expected_value)
-                    base_val = ev_arr[1] if ev_arr.size > 1 else expected_value
+                    base_val = ev_arr[1] if ev_arr.size > 1 else float(expected_value)
 
+                    # Build Explanation (for waterfall)
                     exp = shap.Explanation(
                         values=sv_1d,
                         base_values=base_val,
@@ -209,37 +214,74 @@ with tab1:
                         feature_names=FEATURES
                     )
 
-                    # draw waterfall
-                    fig = plt.figure(figsize=(10, 4.8), dpi=200)
-                    shap.plots.waterfall(exp, max_display=len(FEATURES), show=False)
-                    st.pyplot(fig, use_container_width=True)
+                    # =========================
+                    # Waterfall (paper)
+                    # =========================
+                    if plot_type.startswith("Waterfall"):
+                        fig = plt.figure(figsize=(10, 4.8), dpi=200)
+                        shap.plots.waterfall(exp, max_display=len(FEATURES), show=False)
+                        st.pyplot(fig, use_container_width=True)
 
-                    # export PNG (300 dpi)
-                    png_buf = io.BytesIO()
-                    fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
-                    png_buf.seek(0)
-                    st.download_button(
-                        "⬇️ Download SHAP waterfall (PNG, 300 dpi)",
-                        data=png_buf,
-                        file_name="shap_waterfall.png",
-                        mime="image/png",
-                    )
+                        png_buf = io.BytesIO()
+                        fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
+                        png_buf.seek(0)
+                        st.download_button(
+                            "⬇️ Download SHAP waterfall (PNG, 300 dpi)",
+                            data=png_buf,
+                            file_name="shap_waterfall.png",
+                            mime="image/png",
+                        )
 
-                    # export PDF (vector)
-                    pdf_buf = io.BytesIO()
-                    fig.savefig(pdf_buf, format="pdf", bbox_inches="tight")
-                    pdf_buf.seek(0)
-                    st.download_button(
-                        "⬇️ Download SHAP waterfall (PDF)",
-                        data=pdf_buf,
-                        file_name="shap_waterfall.pdf",
-                        mime="application/pdf",
-                    )
+                        pdf_buf = io.BytesIO()
+                        fig.savefig(pdf_buf, format="pdf", bbox_inches="tight")
+                        pdf_buf.seek(0)
+                        st.download_button(
+                            "⬇️ Download SHAP waterfall (PDF)",
+                            data=pdf_buf,
+                            file_name="shap_waterfall.pdf",
+                            mime="application/pdf",
+                        )
+                        plt.close(fig)
 
-                    plt.close(fig)
+                    # =========================
+                    # Force (paper-style bar)
+                    # =========================
+                    else:
+                        # This produces the style similar to your screenshot
+                        fig = plt.figure(figsize=(13, 3.2), dpi=200)
+                        shap.force_plot(
+                            base_value=base_val,
+                            shap_values=sv_1d,
+                            features=x_np[0],
+                            feature_names=FEATURES,
+                            matplotlib=True,
+                            show=False,
+                        )
+                        st.pyplot(fig, use_container_width=True)
+
+                        png_buf = io.BytesIO()
+                        fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
+                        png_buf.seek(0)
+                        st.download_button(
+                            "⬇️ Download SHAP force plot (PNG, 300 dpi)",
+                            data=png_buf,
+                            file_name="shap_force_plot.png",
+                            mime="image/png",
+                        )
+
+                        pdf_buf = io.BytesIO()
+                        fig.savefig(pdf_buf, format="pdf", bbox_inches="tight")
+                        pdf_buf.seek(0)
+                        st.download_button(
+                            "⬇️ Download SHAP force plot (PDF)",
+                            data=pdf_buf,
+                            file_name="shap_force_plot.pdf",
+                            mime="application/pdf",
+                        )
+                        plt.close(fig)
 
                 except Exception as e:
-                    st.error(f"Failed to generate SHAP paper figure: {e}")
+                    st.error(f"Failed to generate SHAP plot: {e}")
 
 # =========================
 # Tab 2: Batch prediction

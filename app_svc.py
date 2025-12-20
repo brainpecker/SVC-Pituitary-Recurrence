@@ -135,46 +135,92 @@ with tab1:
         else:
             st.success("Result: Low risk (0)")
 
-        # ---- SHAP explanation ----
-        if show_explain:
-            st.markdown("### Model explanation (SHAP)")
+# ---- SHAP explanation (Paper-ready figure) ----
+if show_explain:
+    st.markdown("### Model explanation (SHAP)")
 
-            if "shap_bg" not in st.session_state or st.session_state["shap_bg"].empty:
-                st.warning(
-                    "No SHAP background data available.\n\n"
-                    f"Please add `{DEFAULT_BACKGROUND_CSV}` next to the app, or upload a CSV once in Batch tab."
-                )
+    if "shap_bg" not in st.session_state or st.session_state["shap_bg"].empty:
+        st.warning(
+            "No SHAP background data available.\n\n"
+            "Please add `train.csv` next to the app for built-in background, "
+            "or upload a CSV once in the Batch tab."
+        )
+    else:
+        bg_df = st.session_state["shap_bg"].copy()
+        if len(bg_df) > bg_rows:
+            bg_df = bg_df.head(bg_rows)
+
+        bg_np = bg_df[FEATURES].to_numpy(dtype=float)
+        x_np = X_one[FEATURES].to_numpy(dtype=float)
+
+        # wrapper predict fn (works with sklearn Pipeline too)
+        def predict_fn(x):
+            x_df = pd.DataFrame(x, columns=FEATURES)
+            proba_ = np.asarray(model.predict_proba(x_df))
+            if proba_.ndim == 1:
+                proba_ = proba_.reshape(-1, 1)
+            return proba_
+
+        try:
+            explainer = get_shap_explainer(predict_fn, bg_np)
+
+            # shap_values: list (per class) or array
+            shap_values = explainer.shap_values(x_np, nsamples=nsamples)
+            expected_value = explainer.expected_value
+
+            # pick positive class if available
+            if isinstance(shap_values, list):
+                class_idx = 1 if len(shap_values) > 1 else 0
+                sv = shap_values[class_idx]  # (1, n_features)
+                ev_arr = np.atleast_1d(expected_value)
+                ev = ev_arr[class_idx] if ev_arr.size > class_idx else expected_value
             else:
-                bg_df = st.session_state["shap_bg"].copy()
-                if len(bg_df) > bg_rows:
-                    bg_df = bg_df.head(bg_rows)
+                sv = shap_values
+                ev = expected_value
 
-                bg_np = bg_df[FEATURES].to_numpy(dtype=float)
-                x_np = X_one[FEATURES].to_numpy(dtype=float)
+            # Build SHAP Explanation object (new API, stable)
+            # sv[0] is the single sample's shap values vector
+            exp = shap.Explanation(
+                values=sv[0],
+                base_values=ev,
+                data=x_np[0],
+                feature_names=FEATURES
+            )
 
-                # wrapper predict fn to avoid sklearn Pipeline feature_names_in_ issues
-                def predict_fn(x):
-                    x_df = pd.DataFrame(x, columns=FEATURES)
-                    proba_ = np.asarray(model.predict_proba(x_df))
-                    if proba_.ndim == 1:
-                        proba_ = proba_.reshape(-1, 1)
-                    return proba_
+            st.caption("Waterfall plot is paper-ready and stable across SHAP versions.")
 
-                try:
-                    explainer = get_shap_explainer(predict_fn, bg_np)
+            # --- Render plot in Streamlit ---
+            fig = plt.figure(figsize=(10, 4.8), dpi=200)
+            shap.plots.waterfall(exp, max_display=len(FEATURES), show=False)
+            st.pyplot(fig, use_container_width=True)
 
-                    shap_values = explainer.shap_values(x_np, nsamples=nsamples)
-                    expected_value = explainer.expected_value
+            # --- Export PNG (300 dpi) ---
+            png_buf = io.BytesIO()
+            fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
+            png_buf.seek(0)
+            st.download_button(
+                "⬇️ Download SHAP waterfall (PNG, 300 dpi)",
+                data=png_buf,
+                file_name="shap_waterfall.png",
+                mime="image/png",
+            )
 
-                    # robust select output (positive class if exists)
-                    if isinstance(shap_values, list):
-                        class_idx = 1 if len(shap_values) > 1 else 0
-                        sv = shap_values[class_idx]  # shape (1, n_features)
-                        ev_arr = np.atleast_1d(expected_value)
-                        ev = ev_arr[class_idx] if ev_arr.size > class_idx else expected_value
-                    else:
-                        sv = shap_values
-                        ev = expected_value
+            # --- Export PDF (vector, best for paper) ---
+            pdf_buf = io.BytesIO()
+            fig.savefig(pdf_buf, format="pdf", bbox_inches="tight")
+            pdf_buf.seek(0)
+            st.download_button(
+                "⬇️ Download SHAP waterfall (PDF)",
+                data=pdf_buf,
+                file_name="shap_waterfall.pdf",
+                mime="application/pdf",
+            )
+
+            plt.close(fig)
+
+        except Exception as e:
+            st.error(f"Failed to generate SHAP paper figure: {e}")
+
 
                     # ---- NEW SHAP API (v0.20+) ----
                     # create force plot object
@@ -263,3 +309,4 @@ with tab2:
             file_name="svc_predictions.csv",
             mime="text/csv",
         )
+

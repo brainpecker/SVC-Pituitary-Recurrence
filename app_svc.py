@@ -220,18 +220,7 @@ if show_explain:
 
         except Exception as e:
             st.error(f"Failed to generate SHAP paper figure: {e}")
-                    # render html (most stable)
-                    html = f"<head>{shap.getjs()}</head><body>{fp.html()}</body>"
-                    st_shap(html, height=260)
-
-                    # download html
-                    st.download_button(
-                        "⬇️ Download SHAP plot (HTML)",
-                        data=html.encode("utf-8"),
-                        file_name="shap_force_plot.html",
-                        mime="text/html",
-                    )
-
+          
                     # ---- Optional: try PNG export (best-effort) ----
                     # Some SHAP versions support matplotlib=True, some don't. We'll try safely.
                     try:
@@ -298,5 +287,6 @@ with tab2:
             file_name="svc_predictions.csv",
             mime="text/csv",
         )
+
 
 

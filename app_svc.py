@@ -51,17 +51,15 @@ except Exception as e:
     st.sidebar.error(f"Failed to load model: {e}")
     st.stop()
 
-# Optional UI control
 st.sidebar.markdown("---")
 show_explain = st.sidebar.checkbox("Show SHAP explanation for single case", value=True)
 bg_rows = st.sidebar.slider("SHAP background rows (from uploaded CSV)", 20, 300, 100, 10)
 
-# Cache the explainer to avoid rebuilding repeatedly
+
+# ✅ FIX: cache explainer built from a prediction function + numpy background
 @st.cache_resource
-def get_shap_explainer(_model, bg: pd.DataFrame):
-    # KernelExplainer works with any model that has predict_proba
-    # Note: may be slow if background is large
-    return shap.KernelExplainer(_model.predict_proba, bg)
+def get_shap_explainer(_predict_fn, bg_np: np.ndarray):
+    return shap.KernelExplainer(_predict_fn, bg_np)
 
 
 tab1, tab2 = st.tabs(["🧍 Single Case Prediction", "📄 Batch Prediction (CSV)"])
@@ -131,22 +129,32 @@ with tab1:
                     "We will use the first rows as background data for explanation only."
                 )
             else:
-                bg = st.session_state["shap_bg"].copy()
-                if len(bg) > bg_rows:
-                    bg = bg.head(bg_rows)
+                bg_df = st.session_state["shap_bg"].copy()
+                if len(bg_df) > bg_rows:
+                    bg_df = bg_df.head(bg_rows)
+
+                # ✅ IMPORTANT: convert to numpy to avoid sklearn Pipeline feature_names_in_ issue
+                bg_np = bg_df[FEATURES].to_numpy(dtype=float)
+                x_np = X_one[FEATURES].to_numpy(dtype=float)
+
+                # ✅ wrapper function: SHAP calls predict_fn(x) and expects probabilities
+                def predict_fn(x):
+                    x_df = pd.DataFrame(x, columns=FEATURES)
+                    return model.predict_proba(x_df)
 
                 try:
-                    explainer = get_shap_explainer(model, bg)
+                    explainer = get_shap_explainer(predict_fn, bg_np)
 
-                    # shap_values: list for each class [0, 1]
-                    shap_values = explainer.shap_values(X_one)
+                    # list: [class0, class1]
+                    shap_values = explainer.shap_values(x_np)
+                    expected_value = explainer.expected_value
 
-                    # Plot force plot for positive class (class 1)
                     plt.figure()
                     shap.force_plot(
-                        explainer.expected_value[1],
+                        expected_value[1],
                         shap_values[1],
-                        X_one,
+                        x_np,
+                        feature_names=FEATURES,
                         matplotlib=True,
                         show=False,
                     )

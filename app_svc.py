@@ -1,10 +1,10 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
 import shap
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score
 
 st.set_page_config(page_title="SVC Risk Predictor", layout="wide")
 
@@ -17,13 +17,14 @@ FEATURES = [
     "High-risk subtype",
     "Residual tumor",
 ]
-TARGET = "event"
+
 DEFAULT_MODEL_PATH = "best_svc.pkl"
+DEFAULT_BACKGROUND_CSV = "train.csv"  # <-- put this file next to app_svc.py
 
 st.title("🧠 SVC Clinical Risk Prediction Dashboard")
 st.caption(
     "Enter patient features or upload a CSV file to obtain SVC prediction probabilities and classes. "
-    "For SHAP explanation, please upload a CSV once (used only as background data)."
+    "SHAP explanation uses a built-in background dataset (train.csv) so users don't need to upload anything."
 )
 
 
@@ -34,11 +35,23 @@ def ensure_features(df: pd.DataFrame, features: list[str]):
     return True, ""
 
 
-def safe_auc(y_true, proba):
-    y_true = np.asarray(y_true)
-    if len(np.unique(y_true)) < 2:
-        return np.nan
-    return roc_auc_score(y_true, proba)
+def load_background_df(background_path: str) -> pd.DataFrame | None:
+    """Load SHAP background data from a CSV file. Return None if unavailable."""
+    if not os.path.exists(background_path):
+        return None
+    try:
+        bg = pd.read_csv(background_path)
+        ok, msg = ensure_features(bg, FEATURES)
+        if not ok:
+            st.sidebar.warning(f"Background CSV found but invalid: {msg}")
+            return None
+        bg = bg[FEATURES].dropna().copy()
+        if len(bg) < 20:
+            st.sidebar.warning("Background CSV has < 20 valid rows; SHAP may be unreliable.")
+        return bg
+    except Exception as e:
+        st.sidebar.warning(f"Failed to load background CSV: {e}")
+        return None
 
 
 st.sidebar.header("⚙️ Model Loading")
@@ -53,10 +66,22 @@ except Exception as e:
 
 st.sidebar.markdown("---")
 show_explain = st.sidebar.checkbox("Show SHAP explanation for single case", value=True)
-bg_rows = st.sidebar.slider("SHAP background rows (from uploaded CSV)", 20, 300, 100, 10)
+bg_rows = st.sidebar.slider("SHAP background rows", 20, 300, 100, 10)
+nsamples = st.sidebar.slider("SHAP nsamples (speed/quality)", 50, 500, 200, 50)
 
+# --------- SHAP background auto-loading (no upload needed) ----------
+# Try load from local train.csv beside the app file
+auto_bg = load_background_df(DEFAULT_BACKGROUND_CSV)
+if auto_bg is not None:
+    st.session_state["shap_bg"] = auto_bg
+    st.sidebar.success(f"SHAP background loaded from {DEFAULT_BACKGROUND_CSV} ({len(auto_bg)} rows).")
+else:
+    st.sidebar.warning(
+        f"No built-in background found ({DEFAULT_BACKGROUND_CSV}). "
+        "SHAP plot will require uploading a CSV in Batch tab, or adding train.csv to the app folder."
+    )
 
-# ✅ FIX: cache explainer built from a prediction function + numpy background
+# --------- cache explainer using a predict function + numpy background ----------
 @st.cache_resource
 def get_shap_explainer(_predict_fn, bg_np: np.ndarray):
     return shap.KernelExplainer(_predict_fn, bg_np)
@@ -80,29 +105,22 @@ with tab1:
     with c4:
         residual = st.selectbox("Residual tumor", [0, 1], index=0)
 
-    X_one = pd.DataFrame(
-        [
-            {
-                "Visual impairment": vi,
-                "Clival invasion": ci,
-                "Hardy D-E": hardy,
-                "p53 positivity": p53,
-                "Ki-67≥3%": ki67,
-                "High-risk subtype": subtype,
-                "Residual tumor": residual,
-            }
-        ]
-    )
+    X_one = pd.DataFrame([{
+        "Visual impairment": vi,
+        "Clival invasion": ci,
+        "Hardy D-E": hardy,
+        "p53 positivity": p53,
+        "Ki-67≥3%": ki67,
+        "High-risk subtype": subtype,
+        "Residual tumor": residual,
+    }])
 
     st.write("Input features:")
     st.dataframe(X_one, use_container_width=True)
 
     thresh = st.slider(
         "Threshold: predict High Risk (1) if pred_proba ≥ threshold",
-        0.0,
-        1.0,
-        0.5,
-        0.01,
+        0.0, 1.0, 0.5, 0.01
     )
 
     if st.button("🔮 Predict"):
@@ -118,41 +136,57 @@ with tab1:
         else:
             st.success("Result: Low risk (0)")
 
-        # ---- SHAP explanation plot (single case) ----
+        # ---- SHAP explanation plot + export ----
         if show_explain:
             st.markdown("### Model explanation (SHAP)")
 
             if "shap_bg" not in st.session_state or st.session_state["shap_bg"].empty:
                 st.warning(
-                    "No SHAP background data found.\n\n"
-                    "Please go to the **Batch Prediction (CSV)** tab and upload a CSV once. "
-                    "We will use the first rows as background data for explanation only."
+                    "No SHAP background data available.\n\n"
+                    f"Please add `{DEFAULT_BACKGROUND_CSV}` next to the app, "
+                    "or upload a CSV in the Batch tab once."
                 )
             else:
                 bg_df = st.session_state["shap_bg"].copy()
                 if len(bg_df) > bg_rows:
                     bg_df = bg_df.head(bg_rows)
 
-                # ✅ IMPORTANT: convert to numpy to avoid sklearn Pipeline feature_names_in_ issue
                 bg_np = bg_df[FEATURES].to_numpy(dtype=float)
                 x_np = X_one[FEATURES].to_numpy(dtype=float)
 
-                # ✅ wrapper function: SHAP calls predict_fn(x) and expects probabilities
+                # Wrapper: avoid sklearn Pipeline feature_names_in_ bug
                 def predict_fn(x):
                     x_df = pd.DataFrame(x, columns=FEATURES)
-                    return model.predict_proba(x_df)
+                    proba_ = model.predict_proba(x_df)
+                    proba_ = np.asarray(proba_)
+                    if proba_.ndim == 1:
+                        proba_ = proba_.reshape(-1, 1)
+                    return proba_
 
                 try:
                     explainer = get_shap_explainer(predict_fn, bg_np)
 
-                    # list: [class0, class1]
-                    shap_values = explainer.shap_values(x_np)
+                    # SHAP values (can be list or array depending on output shape)
+                    shap_values = explainer.shap_values(x_np, nsamples=nsamples)
                     expected_value = explainer.expected_value
 
+                    # Robust class selection:
+                    # - if list: choose positive class if exists, else use first
+                    # - if array: use directly
+                    if isinstance(shap_values, list):
+                        class_idx = 1 if len(shap_values) > 1 else 0
+                        sv = shap_values[class_idx]
+                        ev_arr = np.atleast_1d(expected_value)
+                        ev = ev_arr[class_idx] if ev_arr.size > class_idx else expected_value
+                    else:
+                        sv = shap_values
+                        ev = expected_value
+
+                    # Draw
                     plt.figure()
                     shap.force_plot(
-                        expected_value[1],
-                        shap_values[1],
+                        ev,
+                        sv,
                         x_np,
                         feature_names=FEATURES,
                         matplotlib=True,
@@ -160,6 +194,18 @@ with tab1:
                     )
                     fig = plt.gcf()
                     st.pyplot(fig, use_container_width=True)
+
+                    # Export as PNG for everyone
+                    import io
+                    buf = io.BytesIO()
+                    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
+                    buf.seek(0)
+                    st.download_button(
+                        label="⬇️ Download SHAP plot (PNG)",
+                        data=buf,
+                        file_name="shap_force_plot.png",
+                        mime="image/png",
+                    )
                     plt.close(fig)
 
                 except Exception as e:
@@ -178,16 +224,11 @@ with tab2:
             st.error(msg)
             st.stop()
 
-        # Save background for SHAP (used in tab1)
+        # (Optional) If user uploads, we can override background too
         bg = df_in[FEATURES].dropna().head(max(bg_rows, 50)).copy()
         if len(bg) >= 20:
             st.session_state["shap_bg"] = bg
-            st.success(f"SHAP background data has been set ({len(bg)} rows).")
-        else:
-            st.warning(
-                "Uploaded CSV has too few valid rows for SHAP background (need ≥ 20). "
-                "Predictions will still work, but explanation may be unavailable."
-            )
+            st.success(f"SHAP background updated from uploaded CSV ({len(bg)} rows).")
 
         X_batch = df_in[FEATURES].copy()
         proba = model.predict_proba(X_batch)[:, 1]

@@ -220,17 +220,6 @@ if show_explain:
 
         except Exception as e:
             st.error(f"Failed to generate SHAP paper figure: {e}")
-
-
-                    # ---- NEW SHAP API (v0.20+) ----
-                    # create force plot object
-                    fp = shap.force_plot(
-                        base_value=ev,
-                        shap_values=sv,
-                        features=x_np,
-                        feature_names=FEATURES
-                    )
-
                     # render html (most stable)
                     html = f"<head>{shap.getjs()}</head><body>{fp.html()}</body>"
                     st_shap(html, height=260)
@@ -309,4 +298,5 @@ with tab2:
             file_name="svc_predictions.csv",
             mime="text/csv",
         )
+
 

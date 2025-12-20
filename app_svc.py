@@ -1,4 +1,5 @@
 import os
+import io
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -19,14 +20,13 @@ FEATURES = [
 ]
 
 DEFAULT_MODEL_PATH = "best_svc.pkl"
-DEFAULT_BACKGROUND_CSV = "train.csv"  # <-- put this file next to app_svc.py
+DEFAULT_BACKGROUND_CSV = "train.csv"  # put next to this app file
 
 st.title("🧠 SVC Clinical Risk Prediction Dashboard")
 st.caption(
-    "Enter patient features or upload a CSV file to obtain SVC prediction probabilities and classes. "
-    "SHAP explanation uses a built-in background dataset (train.csv) so users don't need to upload anything."
+    "Enter patient features to obtain prediction probability/class. "
+    "SHAP explanation uses a built-in background dataset (train.csv), so users don't need to upload anything."
 )
-
 
 def ensure_features(df: pd.DataFrame, features: list[str]):
     missing = [c for c in features if c not in df.columns]
@@ -34,26 +34,22 @@ def ensure_features(df: pd.DataFrame, features: list[str]):
         return False, f"Missing feature columns: {missing}"
     return True, ""
 
-
-def load_background_df(background_path: str) -> pd.DataFrame | None:
-    """Load SHAP background data from a CSV file. Return None if unavailable."""
-    if not os.path.exists(background_path):
+def load_background_df(path: str) -> pd.DataFrame | None:
+    if not os.path.exists(path):
         return None
     try:
-        bg = pd.read_csv(background_path)
+        bg = pd.read_csv(path)
         ok, msg = ensure_features(bg, FEATURES)
         if not ok:
-            st.sidebar.warning(f"Background CSV found but invalid: {msg}")
+            st.sidebar.warning(f"Background CSV invalid: {msg}")
             return None
         bg = bg[FEATURES].dropna().copy()
-        if len(bg) < 20:
-            st.sidebar.warning("Background CSV has < 20 valid rows; SHAP may be unreliable.")
         return bg
     except Exception as e:
         st.sidebar.warning(f"Failed to load background CSV: {e}")
         return None
 
-
+# --- sidebar: model loading ---
 st.sidebar.header("⚙️ Model Loading")
 model_path = st.sidebar.text_input("Model path (best_svc.pkl)", value=DEFAULT_MODEL_PATH)
 
@@ -66,26 +62,29 @@ except Exception as e:
 
 st.sidebar.markdown("---")
 show_explain = st.sidebar.checkbox("Show SHAP explanation for single case", value=True)
-bg_rows = st.sidebar.slider("SHAP background rows", 20, 300, 100, 10)
-nsamples = st.sidebar.slider("SHAP nsamples (speed/quality)", 50, 500, 200, 50)
+bg_rows = st.sidebar.slider("SHAP background rows", 20, 500, 100, 10)
+nsamples = st.sidebar.slider("SHAP nsamples (speed/quality)", 50, 800, 200, 50)
 
-# --------- SHAP background auto-loading (no upload needed) ----------
-# Try load from local train.csv beside the app file
+# --- auto-load background from train.csv ---
 auto_bg = load_background_df(DEFAULT_BACKGROUND_CSV)
 if auto_bg is not None:
     st.session_state["shap_bg"] = auto_bg
     st.sidebar.success(f"SHAP background loaded from {DEFAULT_BACKGROUND_CSV} ({len(auto_bg)} rows).")
 else:
     st.sidebar.warning(
-        f"No built-in background found ({DEFAULT_BACKGROUND_CSV}). "
-        "SHAP plot will require uploading a CSV in Batch tab, or adding train.csv to the app folder."
+        f"No built-in background found: {DEFAULT_BACKGROUND_CSV}. "
+        "Add train.csv next to the app file, or upload a CSV in Batch tab."
     )
 
-# --------- cache explainer using a predict function + numpy background ----------
+# ---- helper: render SHAP html in Streamlit ----
+def st_shap(html, height=260):
+    # streamlit components is built-in
+    st.components.v1.html(html, height=height, scrolling=True)
+
+# ---- cache KernelExplainer (predict_fn + numpy bg) ----
 @st.cache_resource
 def get_shap_explainer(_predict_fn, bg_np: np.ndarray):
     return shap.KernelExplainer(_predict_fn, bg_np)
-
 
 tab1, tab2 = st.tabs(["🧍 Single Case Prediction", "📄 Batch Prediction (CSV)"])
 
@@ -136,15 +135,14 @@ with tab1:
         else:
             st.success("Result: Low risk (0)")
 
-        # ---- SHAP explanation plot + export ----
+        # ---- SHAP explanation ----
         if show_explain:
             st.markdown("### Model explanation (SHAP)")
 
             if "shap_bg" not in st.session_state or st.session_state["shap_bg"].empty:
                 st.warning(
                     "No SHAP background data available.\n\n"
-                    f"Please add `{DEFAULT_BACKGROUND_CSV}` next to the app, "
-                    "or upload a CSV in the Batch tab once."
+                    f"Please add `{DEFAULT_BACKGROUND_CSV}` next to the app, or upload a CSV once in Batch tab."
                 )
             else:
                 bg_df = st.session_state["shap_bg"].copy()
@@ -154,11 +152,10 @@ with tab1:
                 bg_np = bg_df[FEATURES].to_numpy(dtype=float)
                 x_np = X_one[FEATURES].to_numpy(dtype=float)
 
-                # Wrapper: avoid sklearn Pipeline feature_names_in_ bug
+                # wrapper predict fn to avoid sklearn Pipeline feature_names_in_ issues
                 def predict_fn(x):
                     x_df = pd.DataFrame(x, columns=FEATURES)
-                    proba_ = model.predict_proba(x_df)
-                    proba_ = np.asarray(proba_)
+                    proba_ = np.asarray(model.predict_proba(x_df))
                     if proba_.ndim == 1:
                         proba_ = proba_.reshape(-1, 1)
                     return proba_
@@ -166,47 +163,65 @@ with tab1:
                 try:
                     explainer = get_shap_explainer(predict_fn, bg_np)
 
-                    # SHAP values (can be list or array depending on output shape)
                     shap_values = explainer.shap_values(x_np, nsamples=nsamples)
                     expected_value = explainer.expected_value
 
-                    # Robust class selection:
-                    # - if list: choose positive class if exists, else use first
-                    # - if array: use directly
+                    # robust select output (positive class if exists)
                     if isinstance(shap_values, list):
                         class_idx = 1 if len(shap_values) > 1 else 0
-                        sv = shap_values[class_idx]
+                        sv = shap_values[class_idx]  # shape (1, n_features)
                         ev_arr = np.atleast_1d(expected_value)
                         ev = ev_arr[class_idx] if ev_arr.size > class_idx else expected_value
                     else:
                         sv = shap_values
                         ev = expected_value
 
-                    # Draw
-                    plt.figure()
-                    shap.force_plot(
-                        ev,
-                        sv,
-                        x_np,
-                        feature_names=FEATURES,
-                        matplotlib=True,
-                        show=False,
+                    # ---- NEW SHAP API (v0.20+) ----
+                    # create force plot object
+                    fp = shap.force_plot(
+                        base_value=ev,
+                        shap_values=sv,
+                        features=x_np,
+                        feature_names=FEATURES
                     )
-                    fig = plt.gcf()
-                    st.pyplot(fig, use_container_width=True)
 
-                    # Export as PNG for everyone
-                    import io
-                    buf = io.BytesIO()
-                    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
-                    buf.seek(0)
+                    # render html (most stable)
+                    html = f"<head>{shap.getjs()}</head><body>{fp.html()}</body>"
+                    st_shap(html, height=260)
+
+                    # download html
                     st.download_button(
-                        label="⬇️ Download SHAP plot (PNG)",
-                        data=buf,
-                        file_name="shap_force_plot.png",
-                        mime="image/png",
+                        "⬇️ Download SHAP plot (HTML)",
+                        data=html.encode("utf-8"),
+                        file_name="shap_force_plot.html",
+                        mime="text/html",
                     )
-                    plt.close(fig)
+
+                    # ---- Optional: try PNG export (best-effort) ----
+                    # Some SHAP versions support matplotlib=True, some don't. We'll try safely.
+                    try:
+                        plt.figure()
+                        shap.force_plot(
+                            base_value=ev,
+                            shap_values=sv,
+                            features=x_np,
+                            feature_names=FEATURES,
+                            matplotlib=True,
+                            show=False
+                        )
+                        fig = plt.gcf()
+                        buf = io.BytesIO()
+                        fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
+                        buf.seek(0)
+                        st.download_button(
+                            "⬇️ Download SHAP plot (PNG)",
+                            data=buf,
+                            file_name="shap_force_plot.png",
+                            mime="image/png",
+                        )
+                        plt.close(fig)
+                    except Exception:
+                        st.info("PNG export is not supported in this SHAP version. Please use the HTML download (recommended).")
 
                 except Exception as e:
                     st.error(f"Failed to generate SHAP plot: {e}")
@@ -224,7 +239,7 @@ with tab2:
             st.error(msg)
             st.stop()
 
-        # (Optional) If user uploads, we can override background too
+        # optional: update background from uploaded csv
         bg = df_in[FEATURES].dropna().head(max(bg_rows, 50)).copy()
         if len(bg) >= 20:
             st.session_state["shap_bg"] = bg

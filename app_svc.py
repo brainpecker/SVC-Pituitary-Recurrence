@@ -20,7 +20,7 @@ FEATURES = [
 ]
 
 DEFAULT_MODEL_PATH = "best_svc.pkl"
-DEFAULT_BACKGROUND_CSV = "train.csv"  # put next to this app file
+DEFAULT_BACKGROUND_CSV = "train.csv"  # put this next to app_svc.py
 
 st.title("🧠 SVC Clinical Risk Prediction Dashboard")
 st.caption(
@@ -28,13 +28,16 @@ st.caption(
     "SHAP explanation uses a built-in background dataset (train.csv), so users don't need to upload anything."
 )
 
+
 def ensure_features(df: pd.DataFrame, features: list[str]):
     missing = [c for c in features if c not in df.columns]
     if missing:
         return False, f"Missing feature columns: {missing}"
     return True, ""
 
+
 def load_background_df(path: str) -> pd.DataFrame | None:
+    """Load background data for SHAP from CSV."""
     if not os.path.exists(path):
         return None
     try:
@@ -49,7 +52,8 @@ def load_background_df(path: str) -> pd.DataFrame | None:
         st.sidebar.warning(f"Failed to load background CSV: {e}")
         return None
 
-# --- sidebar: model loading ---
+
+# --- Sidebar: model loading ---
 st.sidebar.header("⚙️ Model Loading")
 model_path = st.sidebar.text_input("Model path (best_svc.pkl)", value=DEFAULT_MODEL_PATH)
 
@@ -65,29 +69,32 @@ show_explain = st.sidebar.checkbox("Show SHAP explanation for single case", valu
 bg_rows = st.sidebar.slider("SHAP background rows", 20, 500, 100, 10)
 nsamples = st.sidebar.slider("SHAP nsamples (speed/quality)", 50, 800, 200, 50)
 
-# --- auto-load background from train.csv ---
-auto_bg = load_background_df(DEFAULT_BACKGROUND_CSV)
-if auto_bg is not None:
-    st.session_state["shap_bg"] = auto_bg
-    st.sidebar.success(f"SHAP background loaded from {DEFAULT_BACKGROUND_CSV} ({len(auto_bg)} rows).")
-else:
-    st.sidebar.warning(
-        f"No built-in background found: {DEFAULT_BACKGROUND_CSV}. "
-        "Add train.csv next to the app file, or upload a CSV in Batch tab."
-    )
+# --- Auto-load background from train.csv (so others don't need to upload) ---
+if "shap_bg" not in st.session_state:
+    auto_bg = load_background_df(DEFAULT_BACKGROUND_CSV)
+    if auto_bg is not None:
+        st.session_state["shap_bg"] = auto_bg
+        st.sidebar.success(
+            f"SHAP background loaded from {DEFAULT_BACKGROUND_CSV} ({len(auto_bg)} rows)."
+        )
+    else:
+        st.sidebar.warning(
+            f"No built-in background found: {DEFAULT_BACKGROUND_CSV}. "
+            "Please add train.csv next to the app file (recommended), "
+            "or upload a CSV in Batch tab to set background."
+        )
 
-# ---- helper: render SHAP html in Streamlit ----
-def st_shap(html, height=260):
-    # streamlit components is built-in
-    st.components.v1.html(html, height=height, scrolling=True)
-
-# ---- cache KernelExplainer (predict_fn + numpy bg) ----
+# --- Cache KernelExplainer (predict_fn + numpy bg) ---
 @st.cache_resource
 def get_shap_explainer(_predict_fn, bg_np: np.ndarray):
     return shap.KernelExplainer(_predict_fn, bg_np)
 
+
 tab1, tab2 = st.tabs(["🧍 Single Case Prediction", "📄 Batch Prediction (CSV)"])
 
+# =========================
+# Tab 1: Single case
+# =========================
 with tab1:
     st.subheader("Single Case Input → Risk Prediction")
 
@@ -123,6 +130,7 @@ with tab1:
     )
 
     if st.button("🔮 Predict"):
+        # ---- prediction ----
         proba = float(model.predict_proba(X_one)[:, 1][0])
         pred_by_thresh = int(proba >= thresh)
 
@@ -135,121 +143,90 @@ with tab1:
         else:
             st.success("Result: Low risk (0)")
 
-# ---- SHAP explanation (Paper-ready figure) ----
-if show_explain:
-    st.markdown("### Model explanation (SHAP)")
+        # ---- SHAP (paper-ready waterfall) ----
+        if show_explain:
+            st.markdown("### Model explanation (SHAP)")
+            st.caption("Paper-ready: SHAP waterfall plot (static), with PNG/PDF export.")
 
-    if "shap_bg" not in st.session_state or st.session_state["shap_bg"].empty:
-        st.warning(
-            "No SHAP background data available.\n\n"
-            "Please add `train.csv` next to the app for built-in background, "
-            "or upload a CSV once in the Batch tab."
-        )
-    else:
-        bg_df = st.session_state["shap_bg"].copy()
-        if len(bg_df) > bg_rows:
-            bg_df = bg_df.head(bg_rows)
-
-        bg_np = bg_df[FEATURES].to_numpy(dtype=float)
-        x_np = X_one[FEATURES].to_numpy(dtype=float)
-
-        # wrapper predict fn (works with sklearn Pipeline too)
-        def predict_fn(x):
-            x_df = pd.DataFrame(x, columns=FEATURES)
-            proba_ = np.asarray(model.predict_proba(x_df))
-            if proba_.ndim == 1:
-                proba_ = proba_.reshape(-1, 1)
-            return proba_
-
-        try:
-            explainer = get_shap_explainer(predict_fn, bg_np)
-
-            # shap_values: list (per class) or array
-            shap_values = explainer.shap_values(x_np, nsamples=nsamples)
-            expected_value = explainer.expected_value
-
-            # pick positive class if available
-            if isinstance(shap_values, list):
-                class_idx = 1 if len(shap_values) > 1 else 0
-                sv = shap_values[class_idx]  # (1, n_features)
-                ev_arr = np.atleast_1d(expected_value)
-                ev = ev_arr[class_idx] if ev_arr.size > class_idx else expected_value
+            if "shap_bg" not in st.session_state or st.session_state["shap_bg"].empty:
+                st.warning(
+                    "No SHAP background data available.\n\n"
+                    f"Please add `{DEFAULT_BACKGROUND_CSV}` next to the app (recommended), "
+                    "or upload a CSV in the Batch tab once."
+                )
             else:
-                sv = shap_values
-                ev = expected_value
+                bg_df = st.session_state["shap_bg"].copy()
+                if len(bg_df) > bg_rows:
+                    bg_df = bg_df.head(bg_rows)
 
-            # Build SHAP Explanation object (new API, stable)
-            # sv[0] is the single sample's shap values vector
-            exp = shap.Explanation(
-                values=sv[0],
-                base_values=ev,
-                data=x_np[0],
-                feature_names=FEATURES
-            )
+                bg_np = bg_df[FEATURES].to_numpy(dtype=float)
+                x_np = X_one[FEATURES].to_numpy(dtype=float)
 
-            st.caption("Waterfall plot is paper-ready and stable across SHAP versions.")
+                # wrapper predict fn (works with sklearn Pipeline too)
+                def predict_fn(x):
+                    x_df = pd.DataFrame(x, columns=FEATURES)
+                    proba_ = np.asarray(model.predict_proba(x_df))
+                    if proba_.ndim == 1:
+                        proba_ = proba_.reshape(-1, 1)
+                    return proba_
 
-            # --- Render plot in Streamlit ---
-            fig = plt.figure(figsize=(10, 4.8), dpi=200)
-            shap.plots.waterfall(exp, max_display=len(FEATURES), show=False)
-            st.pyplot(fig, use_container_width=True)
+                try:
+                    explainer = get_shap_explainer(predict_fn, bg_np)
+                    shap_values = explainer.shap_values(x_np, nsamples=nsamples)
+                    expected_value = explainer.expected_value
 
-            # --- Export PNG (300 dpi) ---
-            png_buf = io.BytesIO()
-            fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
-            png_buf.seek(0)
-            st.download_button(
-                "⬇️ Download SHAP waterfall (PNG, 300 dpi)",
-                data=png_buf,
-                file_name="shap_waterfall.png",
-                mime="image/png",
-            )
+                    # choose positive class if available
+                    if isinstance(shap_values, list):
+                        class_idx = 1 if len(shap_values) > 1 else 0
+                        sv = shap_values[class_idx]  # (1, n_features)
+                        ev_arr = np.atleast_1d(expected_value)
+                        ev = ev_arr[class_idx] if ev_arr.size > class_idx else expected_value
+                    else:
+                        sv = shap_values
+                        ev = expected_value
 
-            # --- Export PDF (vector, best for paper) ---
-            pdf_buf = io.BytesIO()
-            fig.savefig(pdf_buf, format="pdf", bbox_inches="tight")
-            pdf_buf.seek(0)
-            st.download_button(
-                "⬇️ Download SHAP waterfall (PDF)",
-                data=pdf_buf,
-                file_name="shap_waterfall.pdf",
-                mime="application/pdf",
-            )
+                    exp = shap.Explanation(
+                        values=sv[0],
+                        base_values=ev,
+                        data=x_np[0],
+                        feature_names=FEATURES
+                    )
 
-            plt.close(fig)
+                    # draw waterfall (static, paper-friendly)
+                    fig = plt.figure(figsize=(10, 4.8), dpi=200)
+                    shap.plots.waterfall(exp, max_display=len(FEATURES), show=False)
+                    st.pyplot(fig, use_container_width=True)
 
-        except Exception as e:
-            st.error(f"Failed to generate SHAP paper figure: {e}")
-          
-                    # ---- Optional: try PNG export (best-effort) ----
-                    # Some SHAP versions support matplotlib=True, some don't. We'll try safely.
-                    try:
-                        plt.figure()
-                        shap.force_plot(
-                            base_value=ev,
-                            shap_values=sv,
-                            features=x_np,
-                            feature_names=FEATURES,
-                            matplotlib=True,
-                            show=False
-                        )
-                        fig = plt.gcf()
-                        buf = io.BytesIO()
-                        fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
-                        buf.seek(0)
-                        st.download_button(
-                            "⬇️ Download SHAP plot (PNG)",
-                            data=buf,
-                            file_name="shap_force_plot.png",
-                            mime="image/png",
-                        )
-                        plt.close(fig)
-                    except Exception:
-                        st.info("PNG export is not supported in this SHAP version. Please use the HTML download (recommended).")
+                    # export PNG (300 dpi)
+                    png_buf = io.BytesIO()
+                    fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
+                    png_buf.seek(0)
+                    st.download_button(
+                        "⬇️ Download SHAP waterfall (PNG, 300 dpi)",
+                        data=png_buf,
+                        file_name="shap_waterfall.png",
+                        mime="image/png",
+                    )
+
+                    # export PDF (vector)
+                    pdf_buf = io.BytesIO()
+                    fig.savefig(pdf_buf, format="pdf", bbox_inches="tight")
+                    pdf_buf.seek(0)
+                    st.download_button(
+                        "⬇️ Download SHAP waterfall (PDF)",
+                        data=pdf_buf,
+                        file_name="shap_waterfall.pdf",
+                        mime="application/pdf",
+                    )
+
+                    plt.close(fig)
 
                 except Exception as e:
-                    st.error(f"Failed to generate SHAP plot: {e}")
+                    st.error(f"Failed to generate SHAP paper figure: {e}")
 
+# =========================
+# Tab 2: Batch prediction
+# =========================
 with tab2:
     st.subheader("Upload CSV → Batch Predict → Download Results")
     st.info(f"The CSV file must contain the 7 feature columns: {FEATURES}")
@@ -263,7 +240,7 @@ with tab2:
             st.error(msg)
             st.stop()
 
-        # optional: update background from uploaded csv
+        # Optional: user upload can update background too
         bg = df_in[FEATURES].dropna().head(max(bg_rows, 50)).copy()
         if len(bg) >= 20:
             st.session_state["shap_bg"] = bg
@@ -287,6 +264,3 @@ with tab2:
             file_name="svc_predictions.csv",
             mime="text/csv",
         )
-
-
-

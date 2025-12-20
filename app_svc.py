@@ -185,12 +185,31 @@ with tab1:
                         sv = shap_values
                         ev = expected_value
 
-                    exp = shap.Explanation(
-                        values=sv[0],
-                        base_values=ev,
-                        data=x_np[0],
-                        feature_names=FEATURES
-                    )
+                    # sv can be:
+# (1, n_features)
+# (n_features, n_outputs)
+# (n_features,)
+sv_arr = np.asarray(sv)
+
+# Case 1: (n_features, n_outputs) -> take positive class (index 1)
+if sv_arr.ndim == 2 and sv_arr.shape[1] > 1:
+    sv_1d = sv_arr[:, 1]
+
+# Case 2: (1, n_features)
+elif sv_arr.ndim == 2 and sv_arr.shape[0] == 1:
+    sv_1d = sv_arr[0]
+
+# Case 3: already 1D
+else:
+    sv_1d = sv_arr
+
+exp = shap.Explanation(
+    values=sv_1d,
+    base_values=ev,
+    data=x_np[0],
+    feature_names=FEATURES
+)
+
 
                     # draw waterfall (static, paper-friendly)
                     fig = plt.figure(figsize=(10, 4.8), dpi=200)
@@ -264,3 +283,4 @@ with tab2:
             file_name="svc_predictions.csv",
             mime="text/csv",
         )
+

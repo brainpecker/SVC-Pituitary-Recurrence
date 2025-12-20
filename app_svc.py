@@ -82,35 +82,34 @@ def clean_and_style_forceplot_texts(
     ax: plt.Axes,
     fx: float,
     baseline: float,
-    title_prefix: str,
     *,
     feature_label_map: dict[str, str],
     label_fontsize: int = 7,
     title_fontsize: int = 10,
 ):
     """
-    Make SHAP matplotlib force_plot look journal-ready:
+    Journal-ready SHAP matplotlib force_plot:
     - Remove internal f(x)/base value texts
     - Move higher/lower upward
     - Replace biggest numeric with true fx
     - Convert 1.0 -> 1
-    - Rename feature labels (left side of "name = value")
-    - Set uniform smaller fontsize for all ax.texts
+    - Rename feature labels
+    - Uniform smaller font size
     """
-    # 1) remove internal f(x) / base value
+    # remove internal f(x) / base value
     for txt in ax.texts:
         t = txt.get_text().lower()
         if "f(x)" in t or "base value" in t:
             txt.set_visible(False)
 
-    # 2) move higher/lower up a bit
+    # move higher/lower up a bit
     for txt in ax.texts:
         t = txt.get_text()
         if "higher" in t or "lower" in t:
             x, y = txt.get_position()
             txt.set_position((x, y + 0.08))
 
-    # 3) replace biggest numeric text with real fx
+    # replace biggest numeric with real fx
     biggest_txt = None
     biggest_size = 0.0
     for txt in ax.texts:
@@ -123,29 +122,24 @@ def clean_and_style_forceplot_texts(
     if biggest_txt is not None:
         biggest_txt.set_text(f"{fx:.2f}")
 
-    # 4) convert "1.0" -> "1" in labels and rename feature
+    # 1.0 -> 1 and rename feature label
     for txt in ax.texts:
         t = txt.get_text()
-
-        # rename feature labels of pattern: "<feature> = <value>"
         if " = " in t:
-            # split once
             left, right = t.split(" = ", 1)
             left_clean = left.strip()
-
-            # find mapping by exact match (robust to small formatting)
             mapped = feature_label_map.get(left_clean, left_clean)
-
-            # 1.0 -> 1
             right = re.sub(r"(-?\d+)\.0\b", r"\1", right)
-
             txt.set_text(f"{mapped} = {right}")
 
-    # 5) set title (only one consistent title)
-    full_title = f"{title_prefix}  f(x) = {fx:.2f}, baseline = {baseline:.2f}"
-    ax.set_title(full_title, fontsize=title_fontsize, pad=8)
+    # title (NO high/low)
+    ax.set_title(
+        f"f(x) = {fx:.2f}, baseline = {baseline:.2f}",
+        fontsize=title_fontsize,
+        pad=8
+    )
 
-    # 6) uniform small text to avoid overlap
+    # uniform text font size
     for txt in ax.texts:
         txt.set_fontsize(label_fontsize)
 
@@ -157,13 +151,11 @@ def plot_force_prob_paper(
     x_row: pd.Series,
     fx: float,
     baseline: float,
-    title_prefix: str,
 ) -> plt.Figure:
     """
     Create journal-style force plot figure using SHAP's matplotlib=True output,
-    then post-process text/labels to match paper style.
+    then post-process to match paper style.
     """
-    # SHAP force plot
     shap.force_plot(
         base_value=explainer.expected_value,
         shap_values=shap_values_1d,
@@ -174,7 +166,6 @@ def plot_force_prob_paper(
     )
 
     fig = plt.gcf()
-    # slightly taller than before to reduce label collision
     fig.set_size_inches(12.5, 2.35)
     fig.set_dpi(600)
 
@@ -183,20 +174,16 @@ def plot_force_prob_paper(
     ax.set_ylabel("")
     ax.set_xlabel("Predicted probability", fontsize=8)
 
-    # Apply journal styling
     clean_and_style_forceplot_texts(
         ax=ax,
         fx=fx,
         baseline=baseline,
-        title_prefix=title_prefix,
         feature_label_map={k: format_feature_label(k) for k in FEATURES},
         label_fontsize=7,
         title_fontsize=10,
     )
 
     ax.tick_params(axis="x", labelsize=7)
-
-    # tighter layout (journal style)
     plt.tight_layout(pad=1.1)
 
     return fig
@@ -218,7 +205,7 @@ except Exception as e:
 st.sidebar.markdown("---")
 show_explain = st.sidebar.checkbox("Show SHAP explanation (journal-style force plot)", value=True)
 
-bg_rows = st.sidebar.slider("SHAP background rows", 20, 500, 50, 10)   # paper-like default
+bg_rows = st.sidebar.slider("SHAP background rows", 20, 500, 50, 10)
 nsamples = st.sidebar.slider("SHAP nsamples", 50, 800, 200, 50)
 
 DEFAULT_THRESH = 0.5
@@ -242,11 +229,9 @@ if "shap_bg" not in st.session_state:
 # =========================
 @st.cache_resource
 def build_kernel_explainer(bg_np: np.ndarray):
-    # probability-space explainer (positive class)
     def f_prob(x):
         x_df = pd.DataFrame(x, columns=FEATURES)
         return model.predict_proba(x_df)[:, 1]
-
     return shap.KernelExplainer(f_prob, bg_np)
 
 
@@ -284,7 +269,7 @@ st.dataframe(X_one, use_container_width=True)
 thresh = st.slider("Threshold", 0.0, 1.0, DEFAULT_THRESH, 0.01)
 
 if st.button("🔮 Predict"):
-    # ---- prediction ----
+    # prediction
     proba = float(model.predict_proba(X_one)[:, 1][0])
     pred_by_thresh = int(proba >= thresh)
 
@@ -294,12 +279,10 @@ if st.button("🔮 Predict"):
 
     if pred_by_thresh == 1:
         st.error("Result: High risk (1)")
-        title_prefix = "High-risk patient"
     else:
         st.success("Result: Low risk (0)")
-        title_prefix = "Low-risk patient"
 
-    # ---- SHAP force plot ----
+    # SHAP force plot
     if show_explain:
         st.markdown("### Model explanation (SHAP)")
 
@@ -318,18 +301,13 @@ if st.button("🔮 Predict"):
                 x_np = X_one.to_numpy(dtype=float)
                 sv = explainer.shap_values(x_np, nsamples=nsamples)
 
-                # Normalize to 1D (n_features,)
                 if isinstance(sv, list):
                     sv_arr = np.asarray(sv[0])
                 else:
                     sv_arr = np.asarray(sv)
 
-                if sv_arr.ndim == 2:
-                    sv_1d = sv_arr[0]
-                else:
-                    sv_1d = sv_arr
+                sv_1d = sv_arr[0] if sv_arr.ndim == 2 else sv_arr
 
-                # baseline like your original: mean of expected_value
                 baseline = float(np.array(explainer.expected_value).mean())
 
                 fig = plot_force_prob_paper(
@@ -338,12 +316,11 @@ if st.button("🔮 Predict"):
                     x_row=X_one.iloc[0],
                     fx=proba,
                     baseline=baseline,
-                    title_prefix=title_prefix,
                 )
 
                 st.pyplot(fig, use_container_width=True)
 
-                # ---- Export TIFF (600 dpi) ----
+                # export TIFF (600 dpi)
                 tiff_buf = io.BytesIO()
                 fig.savefig(
                     tiff_buf,
@@ -361,7 +338,7 @@ if st.button("🔮 Predict"):
                     mime="image/tiff",
                 )
 
-                # ---- Export PNG (300 dpi) ----
+                # export PNG (300 dpi)
                 png_buf = io.BytesIO()
                 fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
                 png_buf.seek(0)
@@ -372,7 +349,7 @@ if st.button("🔮 Predict"):
                     mime="image/png",
                 )
 
-                # ---- Export PDF ----
+                # export PDF
                 pdf_buf = io.BytesIO()
                 fig.savefig(pdf_buf, format="pdf", bbox_inches="tight")
                 pdf_buf.seek(0)

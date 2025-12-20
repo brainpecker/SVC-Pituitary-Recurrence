@@ -162,7 +162,6 @@ with tab1:
                 bg_np = bg_df[FEATURES].to_numpy(dtype=float)
                 x_np = X_one[FEATURES].to_numpy(dtype=float)
 
-                # wrapper predict fn (works with sklearn Pipeline too)
                 def predict_fn(x):
                     x_df = pd.DataFrame(x, columns=FEATURES)
                     proba_ = np.asarray(model.predict_proba(x_df))
@@ -178,40 +177,34 @@ with tab1:
                     # choose positive class if available
                     if isinstance(shap_values, list):
                         class_idx = 1 if len(shap_values) > 1 else 0
-                        sv = shap_values[class_idx]  # (1, n_features)
+                        sv = shap_values[class_idx]
                         ev_arr = np.atleast_1d(expected_value)
                         ev = ev_arr[class_idx] if ev_arr.size > class_idx else expected_value
                     else:
                         sv = shap_values
                         ev = expected_value
 
-                    # sv can be:
-# (1, n_features)
-# (n_features, n_outputs)
-# (n_features,)
-sv_arr = np.asarray(sv)
+                    # ---- Make sv 1D for waterfall ----
+                    sv_arr = np.asarray(sv)
 
-# Case 1: (n_features, n_outputs) -> take positive class (index 1)
-if sv_arr.ndim == 2 and sv_arr.shape[1] > 1:
-    sv_1d = sv_arr[:, 1]
+                    # (n_features, n_outputs) -> choose positive class column
+                    if sv_arr.ndim == 2 and sv_arr.shape[1] > 1:
+                        sv_1d = sv_arr[:, 1]
+                    # (1, n_features) -> take row
+                    elif sv_arr.ndim == 2 and sv_arr.shape[0] == 1:
+                        sv_1d = sv_arr[0]
+                    # already 1D
+                    else:
+                        sv_1d = sv_arr
 
-# Case 2: (1, n_features)
-elif sv_arr.ndim == 2 and sv_arr.shape[0] == 1:
-    sv_1d = sv_arr[0]
+                    exp = shap.Explanation(
+                        values=sv_1d,
+                        base_values=ev,
+                        data=x_np[0],
+                        feature_names=FEATURES
+                    )
 
-# Case 3: already 1D
-else:
-    sv_1d = sv_arr
-
-exp = shap.Explanation(
-    values=sv_1d,
-    base_values=ev,
-    data=x_np[0],
-    feature_names=FEATURES
-)
-
-
-                    # draw waterfall (static, paper-friendly)
+                    # draw waterfall
                     fig = plt.figure(figsize=(10, 4.8), dpi=200)
                     shap.plots.waterfall(exp, max_display=len(FEATURES), show=False)
                     st.pyplot(fig, use_container_width=True)
@@ -283,4 +276,3 @@ with tab2:
             file_name="svc_predictions.csv",
             mime="text/csv",
         )
-

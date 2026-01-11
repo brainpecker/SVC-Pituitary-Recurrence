@@ -8,11 +8,14 @@ import joblib
 import shap
 import matplotlib.pyplot as plt
 
-# =========================
-# Streamlit page
-# =========================
+# ======================================================
+# Page config
+# ======================================================
 st.set_page_config(page_title="SVC Risk Predictor", layout="wide")
 
+# ======================================================
+# Constants
+# ======================================================
 FEATURES = [
     "Visual impairment",
     "Clival invasion",
@@ -23,17 +26,15 @@ FEATURES = [
     "Residual tumor",
 ]
 
-DEFAULT_MODEL_PATH = "best_svc.pkl"
-# ✅ 固定 background（保证与 notebook 一致）
+MODEL_PATH = "best_svc.pkl"
 FIXED_BACKGROUND_CSV = "background_fixed_50.csv"
 
-# 显示/导出设置
 BG_RANDOM_STATE = 0
-DEFAULT_NSAMPLES = 200
+NSAMPLES = 200
 
-# =========================
-# Journal-style typography (Times New Roman)
-# =========================
+# ======================================================
+# Typography (journal style)
+# ======================================================
 plt.rcParams["font.family"] = "serif"
 plt.rcParams["font.serif"] = ["Times New Roman", "Times", "DejaVu Serif"]
 plt.rcParams["font.size"] = 8
@@ -43,33 +44,22 @@ plt.rcParams["xtick.labelsize"] = 7
 plt.rcParams["ytick.labelsize"] = 7
 
 st.title("🧠 SVC Clinical Risk Prediction Dashboard")
-st.caption("Single-case prediction + notebook-matched baseline (fixed background) + journal-style SHAP force plot")
+st.caption(
+    "Single-case prediction + notebook-matched baseline "
+    "(fixed background) + journal-style SHAP force plot"
+)
 
-# =========================
-# Helpers
-# =========================
-def ensure_features(df: pd.DataFrame, features: list[str]):
-    missing = [c for c in features if c not in df.columns]
+# ======================================================
+# Helper functions
+# ======================================================
+def ensure_features(df: pd.DataFrame) -> None:
+    missing = [c for c in FEATURES if c not in df.columns]
     if missing:
-        return False, f"Missing feature columns: {missing}"
-    return True, ""
-
-def load_background_df_from_path(path: str) -> pd.DataFrame | None:
-    if not path or not os.path.exists(path):
-        return None
-    try:
-        bg = pd.read_csv(path)
-        ok, _ = ensure_features(bg, FEATURES)
-        if not ok:
-            return None
-        return bg[FEATURES].dropna().copy()
-    except Exception:
-        return None
+        raise ValueError(f"Missing feature columns: {missing}")
 
 def scalar_expected_value(ev) -> float:
     return float(np.array(ev).ravel()[0])
 
-# Paper-friendly feature labels (journal style)
 FEATURE_LABEL_MAP = {
     "Visual impairment": "Visual impairment",
     "Clival invasion": "Clival invasion",
@@ -80,76 +70,51 @@ FEATURE_LABEL_MAP = {
     "Residual tumor": "Residual tumor",
 }
 
-def format_feature_label(name: str) -> str:
-    return FEATURE_LABEL_MAP.get(name, name)
-
-def clean_and_style_forceplot_texts(
-    ax: plt.Axes,
-    fx: float,
-    baseline: float,
-    *,
-    feature_label_map: dict[str, str],
-    label_fontsize: int = 7,
-    title_fontsize: int = 10,
-):
-    # remove internal f(x) / base value
+def clean_and_style_forceplot_texts(ax, fx, baseline):
+    # remove internal texts
     for txt in ax.texts:
         t = txt.get_text().lower()
         if "f(x)" in t or "base value" in t:
             txt.set_visible(False)
 
-    # move higher/lower up a bit
+    # move higher/lower
     for txt in ax.texts:
-        t = txt.get_text()
-        if "higher" in t or "lower" in t:
+        if "higher" in txt.get_text() or "lower" in txt.get_text():
             x, y = txt.get_position()
             txt.set_position((x, y + 0.08))
 
-    # replace biggest numeric with real fx
+    # replace biggest numeric with fx
     biggest_txt = None
-    biggest_size = 0.0
+    biggest_size = 0
     for txt in ax.texts:
-        s = txt.get_text().strip()
-        if re.fullmatch(r"-?\d+(\.\d+)?", s):
-            fs = float(txt.get_fontsize())
-            if fs > biggest_size:
-                biggest_size = fs
+        if re.fullmatch(r"-?\d+(\.\d+)?", txt.get_text().strip()):
+            if txt.get_fontsize() > biggest_size:
+                biggest_size = txt.get_fontsize()
                 biggest_txt = txt
     if biggest_txt is not None:
         biggest_txt.set_text(f"{fx:.2f}")
 
-    # 1.0 -> 1 and rename feature label
+    # rename labels and 1.0 -> 1
     for txt in ax.texts:
-        t = txt.get_text()
-        if " = " in t:
-            left, right = t.split(" = ", 1)
-            left_clean = left.strip()
-            mapped = feature_label_map.get(left_clean, left_clean)
+        if " = " in txt.get_text():
+            left, right = txt.get_text().split(" = ", 1)
+            left = FEATURE_LABEL_MAP.get(left.strip(), left.strip())
             right = re.sub(r"(-?\d+)\.0\b", r"\1", right)
-            txt.set_text(f"{mapped} = {right}")
+            txt.set_text(f"{left} = {right}")
 
-    # title
     ax.set_title(
         f"f(x) = {fx:.2f}, baseline = {baseline:.2f}",
-        fontsize=title_fontsize,
+        fontsize=10,
         pad=8,
     )
 
-    # uniform text font size
     for txt in ax.texts:
-        txt.set_fontsize(label_fontsize)
+        txt.set_fontsize(7)
 
-def plot_force_prob_paper(
-    *,
-    base_value: float,
-    shap_values_1d: np.ndarray,
-    x_row: pd.Series,
-    fx: float,
-    baseline: float,
-) -> plt.Figure:
+def plot_force_plot(base_value, shap_values, x_row, fx, baseline):
     shap.force_plot(
-        base_value=base_value,  # ✅ scalar base_value
-        shap_values=shap_values_1d,
+        base_value=base_value,
+        shap_values=shap_values,
         features=x_row,
         feature_names=x_row.index.tolist(),
         matplotlib=True,
@@ -158,8 +123,6 @@ def plot_force_prob_paper(
 
     fig = plt.gcf()
     fig.set_size_inches(12.5, 2.35)
-
-    # ✅ display dpi moderate (avoid blank render)
     fig.set_dpi(150)
 
     ax = plt.gca()
@@ -167,86 +130,67 @@ def plot_force_prob_paper(
     ax.set_ylabel("")
     ax.set_xlabel("Predicted probability", fontsize=8)
 
-    clean_and_style_forceplot_texts(
-        ax=ax,
-        fx=fx,
-        baseline=baseline,
-        feature_label_map={k: format_feature_label(k) for k in FEATURES},
-        label_fontsize=7,
-        title_fontsize=10,
-    )
-
-    ax.tick_params(axis="x", labelsize=7)
+    clean_and_style_forceplot_texts(ax, fx, baseline)
     plt.tight_layout(pad=1.1)
+
     return fig
 
-# =========================
-# Sidebar: model + SHAP settings
-# =========================
-st.sidebar.header("⚙️ Model Loading")
-model_path = st.sidebar.text_input("Model path", value=DEFAULT_MODEL_PATH)
+# ======================================================
+# Load model
+# ======================================================
+st.sidebar.header("⚙️ Model")
 
 try:
-    model = joblib.load(model_path)
-    st.sidebar.success("Model loaded successfully ✅")
+    model = joblib.load(MODEL_PATH)
+    st.sidebar.success("Model loaded successfully")
 except Exception as e:
-    st.sidebar.error(f"Failed to load model: {e}")
+    st.sidebar.error(str(e))
     st.stop()
 
-st.sidebar.markdown("---")
-show_explain = st.sidebar.checkbox("Show SHAP explanation (journal-style force plot)", value=True)
-
-st.sidebar.subheader("SHAP Background (fixed)")
-st.sidebar.write(f"Using `{FIXED_BACKGROUND_CSV}` (fixed 50 rows)")
-
-nsamples = st.sidebar.slider("SHAP nsamples", 50, 800, DEFAULT_NSAMPLES, 50)
-
-# =========================
+# ======================================================
 # Load fixed background
-# =========================
-bg_df = load_background_df_from_path(FIXED_BACKGROUND_CSV)
-if bg_df is None or bg_df.empty:
-    st.sidebar.error(
-        f"Background not found/invalid. Please ensure `{FIXED_BACKGROUND_CSV}` exists and has the 7 feature columns."
-    )
+# ======================================================
+if not os.path.exists(FIXED_BACKGROUND_CSV):
+    st.error(f"Missing {FIXED_BACKGROUND_CSV}")
     st.stop()
-else:
-    st.sidebar.success(f"Background loaded ✅ ({len(bg_df)} rows)")
 
-# =========================
-# Cache KernelExplainer
-# =========================
+bg_df = pd.read_csv(FIXED_BACKGROUND_CSV)
+ensure_features(bg_df)
+bg_df = bg_df[FEATURES].dropna()
+
 @st.cache_resource
-def build_kernel_explainer(bg_np: np.ndarray, seed: int):
+def build_explainer(bg_np):
     def f_prob(x):
         x_df = pd.DataFrame(x, columns=FEATURES)
         return model.predict_proba(x_df)[:, 1]
-    _ = seed
+
     return shap.KernelExplainer(f_prob, bg_np)
 
-bg_np = bg_df.to_numpy(dtype=float)
-explainer = build_kernel_explainer(bg_np, BG_RANDOM_STATE)
-
+explainer = build_explainer(bg_df.to_numpy(float))
 base_value = scalar_expected_value(explainer.expected_value)
 baseline = base_value
 
-# =========================
-# UI: Single case
-# =========================
+# ======================================================
+# Single case input
+# ======================================================
 st.subheader("Single Case Input → Risk Prediction")
 
 c1, c2, c3, c4 = st.columns(4)
+
 with c1:
-    vi = st.selectbox("Visual impairment", [0, 1], index=0)
-    ci = st.selectbox("Clival invasion", [0, 1], index=0)
+    vi = st.selectbox("Visual impairment", [0, 1], 0)
+    ci = st.selectbox("Clival invasion", [0, 1], 0)
+
 with c2:
-    hardy = st.selectbox("Hardy D-E", [0, 1], index=0)
-    p53 = st.selectbox("p53 positivity", [0, 1], index=0)
+    hardy = st.selectbox("Hardy D-E", [0, 1], 0)
+    p53 = st.selectbox("p53 positivity", [0, 1], 0)
+
 with c3:
-    ki67 = st.selectbox("Ki-67≥3%", [0, 1], index=0)
-    subtype = st.selectbox("High-risk subtype", [0, 1], index=0)
+    ki67 = st.selectbox("Ki-67≥3%", [0, 1], 0)
+    subtype = st.selectbox("High-risk subtype", [0, 1], 0)
+
 with c4:
-    residual = st.selectbox("Residual tumor", [0, 1], index=0)
+    residual = st.selectbox("Residual tumor", [0, 1], 0)
 
 X_one = pd.DataFrame([{
     "Visual impairment": vi,
@@ -258,87 +202,53 @@ X_one = pd.DataFrame([{
     "Residual tumor": residual,
 }])
 
-# ❌ 按你的要求移除：
-# - Input features 表格
-# - Threshold slider
-# - pred_label metric
-# - High/Low risk banner
-
+# ======================================================
+# Prediction + SHAP
+# ======================================================
 if st.button("🔮 Predict"):
-    # prediction probability
     proba = float(model.predict_proba(X_one)[:, 1][0])
 
-导入# 只保留这个输出（你截图里不打钩的部分）
-    st.metric("pred_proba (positive class probability)", f"{proba:.4f}")
+    # ✅ 保留两位小数
+    st.metric(
+        "pred_proba (positive class probability)",
+        f"{proba:.2f}"
+    )
 
-    # SHAP force plot
-    if show_explain:
-        st.markdown("### Model explanation (SHAP)")
+    np.random.seed(BG_RANDOM_STATE)
+    sv = explainer.shap_values(X_one.to_numpy(float), nsamples=NSAMPLES)
 
-        try:
-            np.random.seed(BG_RANDOM_STATE)
+    if isinstance(sv, list):
+        sv = np.asarray(sv[0])
 
-            x_np = X_one.to_numpy(dtype=float)
-            sv = explainer.shap_values(x_np, nsamples=nsamples)
+    sv_1d = sv[0]
 
-            if isinstance(sv, list):
-                sv_arr = np.asarray(sv[0])
-            else:
-                sv_arr = np.asarray(sv)
+    fig = plot_force_plot(
+        base_value=base_value,
+        shap_values=sv_1d,
+        x_row=X_one.iloc[0],
+        fx=proba,
+        baseline=baseline,
+    )
 
-            sv_1d = sv_arr[0] if sv_arr.ndim == 2 else sv_arr
+    st.pyplot(fig, use_container_width=True, clear_figure=False)
 
-            fig = plot_force_prob_paper(
-                base_value=base_value,
-                shap_values_1d=sv_1d,
-                x_row=X_one.iloc[0],
-                fx=proba,
-                baseline=baseline,
-            )
+    # ---------------- Export ----------------
+    tiff_buf = io.BytesIO()
+    fig.savefig(
+        tiff_buf,
+        format="tiff",
+        dpi=600,
+        bbox_inches="tight",
+        facecolor="white",
+        pad_inches=0.02,
+    )
+    tiff_buf.seek(0)
 
-            st.pyplot(fig, use_container_width=True, clear_figure=False)
+    st.download_button(
+        "⬇️ Download SHAP force plot (TIFF, 600 dpi)",
+        data=tiff_buf,
+        file_name="shap_force_plot.tiff",
+        mime="image/tiff",
+    )
 
-            # export TIFF (600 dpi)
-            tiff_buf = io.BytesIO()
-            fig.savefig(
-                tiff_buf,
-                format="tiff",
-                dpi=600,
-                bbox_inches="tight",
-                facecolor="white",
-                pad_inches=0.02,
-            )
-            tiff_buf.seek(0)
-            st.download_button(
-                "⬇️ Download SHAP force plot (TIFF, 600 dpi)",
-                data=tiff_buf,
-                file_name="shap_force_plot.tiff",
-                mime="image/tiff",
-            )
-
-            # export PNG (300 dpi)
-            png_buf = io.BytesIO()
-            fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
-            png_buf.seek(0)
-            st.download_button(
-                "⬇️ Download SHAP force plot (PNG, 300 dpi)",
-                data=png_buf,
-                file_name="shap_force_plot.png",
-                mime="image/png",
-            )
-
-            # export PDF
-            pdf_buf = io.BytesIO()
-            fig.savefig(pdf_buf, format="pdf", bbox_inches="tight")
-            pdf_buf.seek(0)
-            st.download_button(
-                "⬇️ Download SHAP force plot (PDF)",
-                data=pdf_buf,
-                file_name="shap_force_plot.pdf",
-                mime="application/pdf",
-            )
-
-            plt.close(fig)
-
-        except Exception as e:
-            st.error(f"Failed to generate journal-style SHAP force plot: {e}")
+    plt.close(fig)

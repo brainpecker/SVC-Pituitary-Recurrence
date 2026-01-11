@@ -24,15 +24,12 @@ FEATURES = [
 ]
 
 DEFAULT_MODEL_PATH = "best_svc.pkl"
-# ✅ 固定 background 文件（与你 notebook 对齐的关键）
+# ✅ 固定 background（保证与 notebook 一致）
 FIXED_BACKGROUND_CSV = "background_fixed_50.csv"
 
-# 可选：如果 fixed 文件不存在，fallback 用这个（一般不会用到）
-FALLBACK_BACKGROUND_CSV = "train.csv"
-
+# 显示/导出设置
 BG_RANDOM_STATE = 0
 DEFAULT_NSAMPLES = 200
-DEFAULT_THRESH = 0.5
 
 # =========================
 # Journal-style typography (Times New Roman)
@@ -69,20 +66,7 @@ def load_background_df_from_path(path: str) -> pd.DataFrame | None:
     except Exception:
         return None
 
-def load_background_df_from_upload(uploaded_file) -> pd.DataFrame | None:
-    if uploaded_file is None:
-        return None
-    try:
-        bg = pd.read_csv(uploaded_file)
-        ok, _ = ensure_features(bg, FEATURES)
-        if not ok:
-            return None
-        return bg[FEATURES].dropna().copy()
-    except Exception:
-        return None
-
 def scalar_expected_value(ev) -> float:
-    """Force expected_value to a single float (avoid mean ambiguity)."""
     return float(np.array(ev).ravel()[0])
 
 # Paper-friendly feature labels (journal style)
@@ -175,7 +159,7 @@ def plot_force_prob_paper(
     fig = plt.gcf()
     fig.set_size_inches(12.5, 2.35)
 
-    # ✅ Streamlit display: avoid huge dpi to prevent blank rendering
+    # ✅ display dpi moderate (avoid blank render)
     fig.set_dpi(150)
 
     ax = plt.gca()
@@ -212,54 +196,28 @@ except Exception as e:
 st.sidebar.markdown("---")
 show_explain = st.sidebar.checkbox("Show SHAP explanation (journal-style force plot)", value=True)
 
-st.sidebar.subheader("SHAP Background (Notebook-matched)")
-st.sidebar.write(f"Default background: `{FIXED_BACKGROUND_CSV}` (fixed, no sampling)")
-
-# 可选：允许上传替换 background（若你想对照不同背景）
-uploaded_bg = st.sidebar.file_uploader(
-    "Optional: upload another background CSV (override)",
-    type=["csv"],
-    help="If uploaded, this will override background_fixed_50.csv. Must contain the 7 feature columns.",
-)
+st.sidebar.subheader("SHAP Background (fixed)")
+st.sidebar.write(f"Using `{FIXED_BACKGROUND_CSV}` (fixed 50 rows)")
 
 nsamples = st.sidebar.slider("SHAP nsamples", 50, 800, DEFAULT_NSAMPLES, 50)
 
 # =========================
-# Load background (fixed first)
+# Load fixed background
 # =========================
-def get_background_df() -> pd.DataFrame | None:
-    # 1) uploaded override
-    bg_up = load_background_df_from_upload(uploaded_bg)
-    if bg_up is not None and not bg_up.empty:
-        return bg_up
-
-    # 2) fixed background file (recommended)
-    bg_fixed = load_background_df_from_path(FIXED_BACKGROUND_CSV)
-    if bg_fixed is not None and not bg_fixed.empty:
-        return bg_fixed
-
-    # 3) fallback
-    bg_fallback = load_background_df_from_path(FALLBACK_BACKGROUND_CSV)
-    if bg_fallback is not None and not bg_fallback.empty:
-        return bg_fallback
-
-    return None
-
-bg_df = get_background_df()
+bg_df = load_background_df_from_path(FIXED_BACKGROUND_CSV)
 if bg_df is None or bg_df.empty:
     st.sidebar.error(
         f"Background not found/invalid. Please ensure `{FIXED_BACKGROUND_CSV}` exists and has the 7 feature columns."
     )
     st.stop()
 else:
-    st.sidebar.success(f"Background loaded ✅ ({len(bg_df)} rows after dropna)")
+    st.sidebar.success(f"Background loaded ✅ ({len(bg_df)} rows)")
 
 # =========================
-# Cache KernelExplainer (keyed by bg bytes + nsamples seed)
+# Cache KernelExplainer
 # =========================
 @st.cache_resource
 def build_kernel_explainer(bg_np: np.ndarray, seed: int):
-    # Notebook style: explain probability of positive class
     def f_prob(x):
         x_df = pd.DataFrame(x, columns=FEATURES)
         return model.predict_proba(x_df)[:, 1]
@@ -270,7 +228,7 @@ bg_np = bg_df.to_numpy(dtype=float)
 explainer = build_kernel_explainer(bg_np, BG_RANDOM_STATE)
 
 base_value = scalar_expected_value(explainer.expected_value)
-baseline = base_value  # show the same baseline that force_plot uses
+baseline = base_value
 
 # =========================
 # UI: Single case
@@ -300,32 +258,24 @@ X_one = pd.DataFrame([{
     "Residual tumor": residual,
 }])
 
-st.write("Input features:")
-st.dataframe(X_one, use_container_width=True)
-
-thresh = st.slider("Threshold", 0.0, 1.0, DEFAULT_THRESH, 0.01)
+# ❌ 按你的要求移除：
+# - Input features 表格
+# - Threshold slider
+# - pred_label metric
+# - High/Low risk banner
 
 if st.button("🔮 Predict"):
-    # prediction
+    # prediction probability
     proba = float(model.predict_proba(X_one)[:, 1][0])
-    pred_by_thresh = int(proba >= thresh)
 
-    m1, m2 = st.columns(2)
-    m1.metric("pred_proba (positive class probability)", f"{proba:.4f}")
-    m2.metric(f"pred_label (threshold {thresh:.2f})", f"{pred_by_thresh}")
-
-    if pred_by_thresh == 1:
-        st.error("Result: High risk (1)")
-    else:
-        st.success("Result: Low risk (0)")
+导入# 只保留这个输出（你截图里不打钩的部分）
+    st.metric("pred_proba (positive class probability)", f"{proba:.4f}")
 
     # SHAP force plot
     if show_explain:
         st.markdown("### Model explanation (SHAP)")
-        st.caption(f"baseline (expected_value) = {baseline:.6f}  |  background rows = {len(bg_df)}")
 
         try:
-            # deterministic-ish for kernel sampling
             np.random.seed(BG_RANDOM_STATE)
 
             x_np = X_one.to_numpy(dtype=float)
@@ -348,8 +298,7 @@ if st.button("🔮 Predict"):
 
             st.pyplot(fig, use_container_width=True, clear_figure=False)
 
-            # ===== Export (high dpi) =====
-            # TIFF 600 dpi
+            # export TIFF (600 dpi)
             tiff_buf = io.BytesIO()
             fig.savefig(
                 tiff_buf,
@@ -367,7 +316,7 @@ if st.button("🔮 Predict"):
                 mime="image/tiff",
             )
 
-            # PNG 300 dpi
+            # export PNG (300 dpi)
             png_buf = io.BytesIO()
             fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
             png_buf.seek(0)
@@ -378,7 +327,7 @@ if st.button("🔮 Predict"):
                 mime="image/png",
             )
 
-            # PDF
+            # export PDF
             pdf_buf = io.BytesIO()
             fig.savefig(pdf_buf, format="pdf", bbox_inches="tight")
             pdf_buf.seek(0)

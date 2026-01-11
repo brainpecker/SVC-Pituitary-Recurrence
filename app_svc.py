@@ -77,7 +77,6 @@ def load_background_df_from_upload(uploaded_file) -> pd.DataFrame | None:
         return None
 
 def scalar_expected_value(ev) -> float:
-    """KernelExplainer expected_value can be scalar/list/np array. Force a single float."""
     return float(np.array(ev).ravel()[0])
 
 # Paper-friendly feature labels (journal style)
@@ -139,14 +138,12 @@ def clean_and_style_forceplot_texts(
             right = re.sub(r"(-?\d+)\.0\b", r"\1", right)
             txt.set_text(f"{mapped} = {right}")
 
-    # title
     ax.set_title(
         f"f(x) = {fx:.2f}, baseline = {baseline:.2f}",
         fontsize=title_fontsize,
         pad=8,
     )
 
-    # uniform text font size
     for txt in ax.texts:
         txt.set_fontsize(label_fontsize)
 
@@ -158,9 +155,8 @@ def plot_force_prob_paper(
     fx: float,
     baseline: float,
 ) -> plt.Figure:
-    # IMPORTANT: use the SAME scalar base_value that we show as baseline
     shap.force_plot(
-        base_value=base_value,
+        base_value=base_value,  # ✅ scalar base_value
         shap_values=shap_values_1d,
         features=x_row,
         feature_names=x_row.index.tolist(),
@@ -206,7 +202,6 @@ except Exception as e:
 st.sidebar.markdown("---")
 show_explain = st.sidebar.checkbox("Show SHAP explanation (journal-style force plot)", value=True)
 
-# baseline strategy (match script)
 st.sidebar.subheader("SHAP Background (script-style baseline)")
 uploaded_bg = st.sidebar.file_uploader(
     "Upload background CSV (optional, e.g., X_test.csv)",
@@ -217,18 +212,14 @@ uploaded_bg = st.sidebar.file_uploader(
 bg_rows = st.sidebar.slider("SHAP background rows", 20, 500, 50, 10)
 nsamples = st.sidebar.slider("SHAP nsamples", 50, 800, 200, 50)
 
-DEFAULT_THRESH = 0.5
-
 # =========================
-# Load background into session_state
+# Load background
 # =========================
 def get_background_df() -> pd.DataFrame | None:
-    # 1) uploaded CSV wins
     bg_up = load_background_df_from_upload(uploaded_bg)
     if bg_up is not None and not bg_up.empty:
         return bg_up
 
-    # 2) fallback to default CSV on disk
     bg_disk = load_background_df_from_path(DEFAULT_BACKGROUND_CSV)
     if bg_disk is not None and not bg_disk.empty:
         return bg_disk
@@ -244,16 +235,14 @@ else:
     )
 
 # =========================
-# Cache KernelExplainer by (bg_np bytes, seed, model)
+# Cache KernelExplainer
 # =========================
 @st.cache_resource
 def build_kernel_explainer(bg_np: np.ndarray, seed: int):
-    # match your script: explain in probability space
     def f_prob(x):
         x_df = pd.DataFrame(x, columns=FEATURES)
         return model.predict_proba(x_df)[:, 1]
-    # seed doesn't directly affect KernelExplainer, but we include it to avoid stale cache
-    _ = seed
+    _ = seed  # include seed to avoid stale cache
     return shap.KernelExplainer(f_prob, bg_np)
 
 # =========================
@@ -284,24 +273,20 @@ X_one = pd.DataFrame([{
     "Residual tumor": residual,
 }])
 
-st.write("Input features:")
-st.dataframe(X_one, use_container_width=True)
-
-thresh = st.slider("Threshold", 0.0, 1.0, DEFAULT_THRESH, 0.01)
+# ❌ 已按你的要求移除：
+# st.write("Input features:")
+# st.dataframe(X_one, use_container_width=True)
+# thresh slider
+# pred_label metric
+# "Result: Low/High risk" banner
 
 if st.button("🔮 Predict"):
     proba = float(model.predict_proba(X_one)[:, 1][0])
-    pred_by_thresh = int(proba >= thresh)
 
-    m1, m2 = st.columns(2)
-    m1.metric("pred_proba (positive class probability)", f"{proba:.4f}")
-    m2.metric(f"pred_label (threshold {thresh:.2f})", f"{pred_by_thresh}")
+    # 只保留概率输出
+    st.metric("pred_proba (positive class probability)", f"{proba:.4f}")
 
-    if pred_by_thresh == 1:
-        st.error("Result: High risk (1)")
-    else:
-        st.success("Result: Low risk (0)")
-
+    # SHAP force plot
     if show_explain:
         st.markdown("### Model explanation (SHAP)")
 
@@ -328,7 +313,6 @@ if st.button("🔮 Predict"):
 
                 sv_1d = sv_arr[0] if sv_arr.ndim == 2 else sv_arr
 
-                # ✅ baseline exactly = expected_value in probability space
                 base_value = scalar_expected_value(explainer.expected_value)
                 baseline = base_value
 

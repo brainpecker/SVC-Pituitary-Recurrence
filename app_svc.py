@@ -24,7 +24,10 @@ FEATURES = [
 ]
 
 DEFAULT_MODEL_PATH = "best_svc.pkl"
-DEFAULT_BACKGROUND_CSV = "train.csv"  # put next to app_svc.py
+DEFAULT_BACKGROUND_CSV = "train.csv"  # optional default background file
+
+# ✅ match your script baseline definition
+BG_RANDOM_STATE = 0
 
 # =========================
 # Journal-style typography (Times New Roman)
@@ -49,19 +52,33 @@ def ensure_features(df: pd.DataFrame, features: list[str]):
         return False, f"Missing feature columns: {missing}"
     return True, ""
 
-
-def load_background_df(path: str) -> pd.DataFrame | None:
-    if not os.path.exists(path):
+def load_background_df_from_path(path: str) -> pd.DataFrame | None:
+    if not path or not os.path.exists(path):
         return None
     try:
         bg = pd.read_csv(path)
-        ok, msg = ensure_features(bg, FEATURES)
+        ok, _ = ensure_features(bg, FEATURES)
         if not ok:
             return None
         return bg[FEATURES].dropna().copy()
     except Exception:
         return None
 
+def load_background_df_from_upload(uploaded_file) -> pd.DataFrame | None:
+    if uploaded_file is None:
+        return None
+    try:
+        bg = pd.read_csv(uploaded_file)
+        ok, _ = ensure_features(bg, FEATURES)
+        if not ok:
+            return None
+        return bg[FEATURES].dropna().copy()
+    except Exception:
+        return None
+
+def scalar_expected_value(ev) -> float:
+    """KernelExplainer expected_value can be scalar/list/np array. Force a single float."""
+    return float(np.array(ev).ravel()[0])
 
 # Paper-friendly feature labels (journal style)
 FEATURE_LABEL_MAP = {
@@ -77,7 +94,6 @@ FEATURE_LABEL_MAP = {
 def format_feature_label(name: str) -> str:
     return FEATURE_LABEL_MAP.get(name, name)
 
-
 def clean_and_style_forceplot_texts(
     ax: plt.Axes,
     fx: float,
@@ -87,15 +103,6 @@ def clean_and_style_forceplot_texts(
     label_fontsize: int = 7,
     title_fontsize: int = 10,
 ):
-    """
-    Journal-ready SHAP matplotlib force_plot:
-    - Remove internal f(x)/base value texts
-    - Move higher/lower upward
-    - Replace biggest numeric with true fx
-    - Convert 1.0 -> 1
-    - Rename feature labels
-    - Uniform smaller font size
-    """
     # remove internal f(x) / base value
     for txt in ax.texts:
         t = txt.get_text().lower()
@@ -132,32 +139,28 @@ def clean_and_style_forceplot_texts(
             right = re.sub(r"(-?\d+)\.0\b", r"\1", right)
             txt.set_text(f"{mapped} = {right}")
 
-    # title (NO high/low)
+    # title
     ax.set_title(
         f"f(x) = {fx:.2f}, baseline = {baseline:.2f}",
         fontsize=title_fontsize,
-        pad=8
+        pad=8,
     )
 
     # uniform text font size
     for txt in ax.texts:
         txt.set_fontsize(label_fontsize)
 
-
 def plot_force_prob_paper(
     *,
-    explainer,
+    base_value: float,
     shap_values_1d: np.ndarray,
     x_row: pd.Series,
     fx: float,
     baseline: float,
 ) -> plt.Figure:
-    """
-    Create journal-style force plot figure using SHAP's matplotlib=True output,
-    then post-process to match paper style.
-    """
+    # IMPORTANT: use the SAME scalar base_value that we show as baseline
     shap.force_plot(
-        base_value=explainer.expected_value,
+        base_value=base_value,
         shap_values=shap_values_1d,
         features=x_row,
         feature_names=x_row.index.tolist(),
@@ -185,9 +188,7 @@ def plot_force_prob_paper(
 
     ax.tick_params(axis="x", labelsize=7)
     plt.tight_layout(pad=1.1)
-
     return fig
-
 
 # =========================
 # Sidebar: model + SHAP settings
@@ -205,35 +206,55 @@ except Exception as e:
 st.sidebar.markdown("---")
 show_explain = st.sidebar.checkbox("Show SHAP explanation (journal-style force plot)", value=True)
 
+# baseline strategy (match script)
+st.sidebar.subheader("SHAP Background (script-style baseline)")
+uploaded_bg = st.sidebar.file_uploader(
+    "Upload background CSV (optional, e.g., X_test.csv)",
+    type=["csv"],
+    help="If uploaded, this background overrides the default train.csv. Must contain the 7 feature columns.",
+)
+
 bg_rows = st.sidebar.slider("SHAP background rows", 20, 500, 50, 10)
 nsamples = st.sidebar.slider("SHAP nsamples", 50, 800, 200, 50)
 
 DEFAULT_THRESH = 0.5
 
 # =========================
-# Load SHAP background (train.csv)
+# Load background into session_state
 # =========================
-if "shap_bg" not in st.session_state:
-    auto_bg = load_background_df(DEFAULT_BACKGROUND_CSV)
-    if auto_bg is not None:
-        st.session_state["shap_bg"] = auto_bg
-        st.sidebar.success(f"SHAP background loaded from {DEFAULT_BACKGROUND_CSV} ({len(auto_bg)} rows).")
-    else:
-        st.sidebar.warning(
-            f"No built-in background found: {DEFAULT_BACKGROUND_CSV}. "
-            "Please add train.csv next to the app file."
-        )
+def get_background_df() -> pd.DataFrame | None:
+    # 1) uploaded CSV wins
+    bg_up = load_background_df_from_upload(uploaded_bg)
+    if bg_up is not None and not bg_up.empty:
+        return bg_up
+
+    # 2) fallback to default CSV on disk
+    bg_disk = load_background_df_from_path(DEFAULT_BACKGROUND_CSV)
+    if bg_disk is not None and not bg_disk.empty:
+        return bg_disk
+
+    return None
+
+bg_all = get_background_df()
+if bg_all is not None:
+    st.sidebar.success(f"Background ready ✅ ({len(bg_all)} rows after dropna)")
+else:
+    st.sidebar.warning(
+        f"No valid background found. Upload a CSV, or place `{DEFAULT_BACKGROUND_CSV}` next to the app."
+    )
 
 # =========================
-# Cache KernelExplainer by bg only (avoid hashing functions)
+# Cache KernelExplainer by (bg_np bytes, seed, model)
 # =========================
 @st.cache_resource
-def build_kernel_explainer(bg_np: np.ndarray):
+def build_kernel_explainer(bg_np: np.ndarray, seed: int):
+    # match your script: explain in probability space
     def f_prob(x):
         x_df = pd.DataFrame(x, columns=FEATURES)
         return model.predict_proba(x_df)[:, 1]
+    # seed doesn't directly affect KernelExplainer, but we include it to avoid stale cache
+    _ = seed
     return shap.KernelExplainer(f_prob, bg_np)
-
 
 # =========================
 # UI: Single case
@@ -269,7 +290,6 @@ st.dataframe(X_one, use_container_width=True)
 thresh = st.slider("Threshold", 0.0, 1.0, DEFAULT_THRESH, 0.01)
 
 if st.button("🔮 Predict"):
-    # prediction
     proba = float(model.predict_proba(X_one)[:, 1][0])
     pred_by_thresh = int(proba >= thresh)
 
@@ -282,21 +302,21 @@ if st.button("🔮 Predict"):
     else:
         st.success("Result: Low risk (0)")
 
-    # SHAP force plot
     if show_explain:
         st.markdown("### Model explanation (SHAP)")
 
-        if "shap_bg" not in st.session_state or st.session_state["shap_bg"].empty:
-            st.warning(f"No SHAP background data. Please put `{DEFAULT_BACKGROUND_CSV}` next to the app.")
+        if bg_all is None or bg_all.empty:
+            st.warning("No SHAP background data available. Upload a background CSV (e.g., X_test.csv).")
         else:
-            bg_df = st.session_state["shap_bg"].copy()
+            # ✅ script-style background sampling
+            bg_df = bg_all.copy()
             if len(bg_df) > bg_rows:
-                bg_df = bg_df.head(bg_rows)
+                bg_df = shap.sample(bg_df, bg_rows, random_state=BG_RANDOM_STATE)
 
             bg_np = bg_df.to_numpy(dtype=float)
 
             try:
-                explainer = build_kernel_explainer(bg_np)
+                explainer = build_kernel_explainer(bg_np, BG_RANDOM_STATE)
 
                 x_np = X_one.to_numpy(dtype=float)
                 sv = explainer.shap_values(x_np, nsamples=nsamples)
@@ -308,10 +328,12 @@ if st.button("🔮 Predict"):
 
                 sv_1d = sv_arr[0] if sv_arr.ndim == 2 else sv_arr
 
-                baseline = float(np.array(explainer.expected_value).mean())
+                # ✅ baseline exactly = expected_value in probability space
+                base_value = scalar_expected_value(explainer.expected_value)
+                baseline = base_value
 
                 fig = plot_force_prob_paper(
-                    explainer=explainer,
+                    base_value=base_value,
                     shap_values_1d=sv_1d,
                     x_row=X_one.iloc[0],
                     fx=proba,
